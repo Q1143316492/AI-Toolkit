@@ -10,7 +10,7 @@ AI-Toolkit/
 │   └── Python/         # Python开发规范
 │       └── copilot-instructions.md  # GitHub Copilot指令文件
 └── Tools/              # 实用工具
-    └── ChatToMD.py     # 聊天记录转换工具
+    └── ChatToMD.py     # 聊天记录转换工具，把Copilot Chat导出的JSON转换为Markdown
 ```
 
 ## 📋 Rules - 编程规范

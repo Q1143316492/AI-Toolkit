@@ -3,6 +3,22 @@
 """
 Copilot Chat JSON to Markdown Converter
 Converts exported Copilot chat JSON to readable Markdown format
+
+Features:
+- Parses GitHub Copilot Chat exported JSON files
+- Converts to well-formatted Markdown with proper structure
+- Identifies specific tool calls (run_in_terminal, create_file, etc.)
+- Shows tool parameters and outputs in readable format
+- Handles file references and variable data
+- Supports command line arguments for input/output files
+
+Usage:
+    python ChatToMD.py                          # Uses chat.json -> chat_conversation.md
+    python ChatToMD.py input.json               # Uses input.json -> input.md
+    python ChatToMD.py input.json output.md     # Specify both input and output
+
+Author: AI-Toolkit
+Version: 2.0
 """
 
 import json
@@ -74,16 +90,29 @@ def _ProcessToolInvocation(dictTool: Dict[str, Any]) -> str:
     """Process tool invocation and return formatted text"""
     szResult = ""
     
+    # Extract tool name from toolSpecificData
+    dictToolSpecific = dictTool.get("toolSpecificData", {})
+    szToolName = _ExtractToolName(dictToolSpecific)
+    
     # Get tool message
     dictInvocationMsg = dictTool.get("invocationMessage", {})
     if isinstance(dictInvocationMsg, dict):
         szMessage = dictInvocationMsg.get("value", "")
     else:
-        szMessage = dictInvocationMsg
+        szMessage = str(dictInvocationMsg) if dictInvocationMsg else ""
     
-    if szMessage and szMessage != 'Using ""':
-        szResult += f"\n**🔧 Tool Call:** {szMessage}\n"    # Get tool parameters/input
-    dictToolSpecific = dictTool.get("toolSpecificData", {})
+    # Format tool call with specific name
+    if szToolName:
+        szResult += f"\n**🔧 Tool Call:** {szToolName}"
+        if szMessage and szMessage not in ['Using ""', '']:
+            # Extract explanation from message if available
+            szExplanation = _ExtractExplanation(szMessage)
+            if szExplanation:
+                szResult += f" - {szExplanation}"
+        szResult += "\n"
+    elif szMessage and szMessage != 'Using ""':
+        szResult += f"\n**🔧 Tool Call:** {szMessage}\n"    
+    # Get tool parameters/input
     dictRawInput = dictToolSpecific.get("rawInput", {})
     if dictRawInput:
         # Special handling for SendGmCommandToGame: show formatted GM script directly
@@ -102,31 +131,61 @@ def _ProcessToolInvocation(dictTool: Dict[str, Any]) -> str:
                 szResult += "**Parameters:**\n```json\n"
                 szResult += json.dumps(dictRawInput, indent=2, ensure_ascii=False)
                 szResult += "\n```\n"
-        else:
-            # Regular tool parameters
-            szResult += "**Parameters:**\n```json\n"
-            # Convert escaped newlines in parameters for better readability
-            dictFormattedInput = {}
-            bHasMultilineText = False
-            for szKey, szValue in dictRawInput.items():
-                if isinstance(szValue, str):
-                    dictFormattedInput[szKey] = szValue.replace('\\n', '\n')
-                    if "\\n" in szValue or "\n" in szValue:
-                        bHasMultilineText = True
+        # Special formatting for common tools
+        elif szToolName == "run_in_terminal":
+            szCommand = dictRawInput.get("command", "")
+            szExplanation = dictRawInput.get("explanation", "")
+            if szCommand:
+                if szExplanation:
+                    szResult += f"**Command:** {szExplanation}\n```bash\n{szCommand}\n```\n"
                 else:
-                    dictFormattedInput[szKey] = szValue
-            szResult += json.dumps(dictFormattedInput, indent=2, ensure_ascii=False)
-            szResult += "\n```\n"
-      # Get tool result/output
+                    szResult += f"**Command:**\n```bash\n{szCommand}\n```\n"
+        elif szToolName in ["replace_string_in_file", "insert_edit_into_file", "create_file"]:
+            szFilePath = dictRawInput.get("filePath", "")
+            if szFilePath:
+                szFileName = ExtractFileName(szFilePath)
+                szResult += f"\n**File:** `{szFileName}`\n"
+            if szToolName != "create_file":
+                szResult += "\n```\n"
+                if "oldString" in dictRawInput:
+                    szOldString = dictRawInput["oldString"][:200] + "..." if len(dictRawInput["oldString"]) > 200 else dictRawInput["oldString"]
+                    szResult += f"# Replacing:\n{szOldString}\n\n"
+                if "code" in dictRawInput or "newString" in dictRawInput:
+                    szNewCode = dictRawInput.get("code", dictRawInput.get("newString", ""))
+                    szNewCode = szNewCode[:500] + "..." if len(szNewCode) > 500 else szNewCode
+                    szResult += f"# With:\n{szNewCode}\n"
+                szResult += "```\n"
+        else:
+            # Regular tool parameters - show only important ones
+            dictDisplayInput = {}
+            for szKey, szValue in dictRawInput.items():
+                if szKey in ["query", "symbolName", "url", "explanation", "reason"]:
+                    dictDisplayInput[szKey] = szValue
+                elif isinstance(szValue, str) and len(szValue) < 100:
+                    dictDisplayInput[szKey] = szValue.replace('\\n', '\n')
+            
+            if dictDisplayInput:
+                szResult += "**Parameters:**\n```json\n"
+                szResult += json.dumps(dictDisplayInput, indent=2, ensure_ascii=False)
+                szResult += "\n```\n"    # Get tool result/output
     dictResultDetails = dictTool.get("resultDetails", {})
     if dictResultDetails:
         listOutput = dictResultDetails.get("output", [])
         bIsError = dictResultDetails.get("isError", False)
         
         if listOutput:
-            szResult += "**Output:**\n"
             if bIsError:
-                szResult += "⚠️ **Error occurred:**\n"
+                szResult += "**⚠️ Error:**\n"
+            else:
+                # For successful commands, show abbreviated output
+                if szToolName == "run_in_terminal":
+                    szResult += "**Output:**\n"
+                elif szToolName in ["create_file", "replace_string_in_file", "insert_edit_into_file"]:
+                    # For file operations, just show success/failure
+                    szResult += "**Result:** File operation completed\n"
+                    return szResult
+                else:
+                    szResult += "**Output:**\n"
             
             for dictOutputItem in listOutput:
                 if isinstance(dictOutputItem, dict):
@@ -134,11 +193,17 @@ def _ProcessToolInvocation(dictTool: Dict[str, Any]) -> str:
                     if szOutputValue:
                         # Convert escaped newlines to real newlines
                         szOutputValue = szOutputValue.replace('\\n', '\n')
+                        # Truncate very long output
+                        if len(szOutputValue) > 1000:
+                            szOutputValue = szOutputValue[:1000] + "\n... (output truncated)"
                         szResult += f"```\n{szOutputValue}\n```\n"
                 else:
                     szOutputStr = str(dictOutputItem)
                     # Convert escaped newlines to real newlines
                     szOutputStr = szOutputStr.replace('\\n', '\n')
+                    # Truncate very long output
+                    if len(szOutputStr) > 1000:
+                        szOutputStr = szOutputStr[:1000] + "\n... (output truncated)"
                     szResult += f"```\n{szOutputStr}\n```\n"
     
     return szResult
@@ -215,16 +280,84 @@ def ConvertChatToMarkdown(dictChatData: Dict[str, Any]) -> str:
     
     return szMarkdown
 
+def _ExtractToolName(dictToolSpecific: Dict[str, Any]) -> str:
+    """Extract specific tool name from tool data"""
+    dictRawInput = dictToolSpecific.get("rawInput", {})
+    
+    # Common tool name mappings based on parameters
+    if "command" in dictRawInput:
+        return "run_in_terminal"
+    elif "filePath" in dictRawInput and "oldString" in dictRawInput:
+        return "replace_string_in_file"
+    elif "filePath" in dictRawInput and "code" in dictRawInput:
+        return "insert_edit_into_file"
+    elif "filePath" in dictRawInput and "content" in dictRawInput:
+        return "create_file"
+    elif "query" in dictRawInput and not dictRawInput.get("filePaths"):
+        return "semantic_search"
+    elif "symbolName" in dictRawInput:
+        return "list_code_usages"
+    elif "filePaths" in dictRawInput and "startLineNumberBaseZero" in dictRawInput:
+        return "read_file"
+    elif "path" in dictRawInput:
+        return "list_dir"
+    elif "urls" in dictRawInput:
+        return "fetch_webpage"
+    elif "repo" in dictRawInput:
+        return "github_repo"
+    elif "projectType" in dictRawInput:
+        return "get_project_setup_info"
+    elif "task" in dictRawInput:
+        return "create_and_run_task"
+    elif "id" in dictRawInput:
+        return "install_extension"
+    elif "szGmScript" in dictRawInput:
+        return "SendGmCommandToGame"
+    
+    # Try to extract from tool specific data structure
+    if "tool" in dictToolSpecific:
+        dictToolInfo = dictToolSpecific["tool"]
+        if isinstance(dictToolInfo, dict):
+            return dictToolInfo.get("name", "unknown_tool")
+    
+    return ""
+
+def _ExtractExplanation(szMessage: str) -> str:
+    """Extract explanation from tool message"""
+    if not szMessage:
+        return ""
+    
+    # Remove common prefixes
+    szClean = szMessage.replace('Using "', '').replace('"', '')
+    szClean = szClean.replace('Using ', '')
+    
+    # Skip if it's just a generic message
+    if szClean.lower() in ['run in terminal', 'replace string in file', 'insert edit into file']:
+        return ""
+    
+    return szClean
+
 def main():
     """Main function to convert chat JSON to Markdown"""
-    szJsonPath = "chat.json"
-    szOutputPath = "chat_conversation.md"
+    import sys
+    
+    # Parse command line arguments
+    if len(sys.argv) >= 2:
+        szJsonPath = sys.argv[1]
+        if len(sys.argv) >= 3:
+            szOutputPath = sys.argv[2]
+        else:
+            szOutputPath = szJsonPath.replace('.json', '.md')
+    else:
+        szJsonPath = "chat.json"
+        szOutputPath = "chat_conversation.md"
     
     print(f"Loading chat data from {szJsonPath}...")
     dictChatData = LoadJsonFile(szJsonPath)
     
     if not dictChatData:
         print("Failed to load chat data!")
+        print("Usage: python ChatToMD.py [input.json] [output.md]")
         return
     
     print("Converting to Markdown format...")
@@ -234,9 +367,10 @@ def main():
     try:
         with open(szOutputPath, 'w', encoding='utf-8') as file:
             file.write(szMarkdown)
-        print(f"Successfully converted chat to {szOutputPath}")
+        print(f"✅ Successfully converted chat to {szOutputPath}")
+        print(f"📄 Generated {len(szMarkdown.splitlines())} lines of Markdown")
     except Exception as e:
-        print(f"Error saving file: {e}")
+        print(f"❌ Error saving file: {e}")
 
 if __name__ == "__main__":
     main()
