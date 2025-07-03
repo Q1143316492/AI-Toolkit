@@ -15,7 +15,7 @@
 - **Constants**: `MAX_LEVEL = 100`
 - **Global**: `g_nCount = 0`, `g_dictPlayers = {}`
 - **Private**: `_g_bDebug = False`, `self._m_nData = 0`
-- **Local**: `szName = ""` (sz=str, n=int, b=bool, f=float, dt=datetime, fun=function)
+- **Local**: `szName = ""` (sz=str, n=int, b=bool, n=float, dt=datetime, fun=function)
 - **Objects**: `PlayerObj`, `ItemObj` (Special: `Player`, `Scene` no Obj suffix)
 
 ### Functions
